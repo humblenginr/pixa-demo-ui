@@ -2,7 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff } from 'lucide-react';
 import {AudioQueueManager} from "./speak.js"
 
-const WebsocketURL = "ws://localhost:8080/ws"
+
+const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+const WebsocketURL = `${wsProtocol}://<change?>/ws`;
 
 function PushToTalk() {
   const [isRecording, setIsRecording] = useState(false);
@@ -25,7 +27,7 @@ function PushToTalk() {
     }
     
     return new Int16Array(buffer);
-}
+  }
 
   // Establish WebSocket connection
   useEffect(() => {
@@ -70,82 +72,80 @@ function PushToTalk() {
     };
   }, []);
 
-
-function floatTo16BitPCM(float32Array) {
-  const buffer = new ArrayBuffer(float32Array.length * 2);
-  const view = new DataView(buffer);
-  let offset = 0;
-  for (let i = 0; i < float32Array.length; i++, offset += 2) {
-    let s = Math.max(-1, Math.min(1, float32Array[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  function floatTo16BitPCM(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
   }
-  return buffer;
-}
 
   // Base64 encode PCM16 data
   const base64EncodeAudio = (float32Array) => {
-  const arrayBuffer = floatTo16BitPCM(float32Array);
-  let binary = '';
-  let bytes = new Uint8Array(arrayBuffer);
-  const chunkSize = 0x8000; // 32KB chunk size
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    let chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk);
+    const arrayBuffer = floatTo16BitPCM(float32Array);
+    let binary = '';
+    let bytes = new Uint8Array(arrayBuffer);
+    const chunkSize = 0x8000; // 32KB chunk size
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      let chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
   }
-  return btoa(binary);
-}
 
-function resampleAudio(inputData, inputSampleRate, targetSampleRate) {
+  function resampleAudio(inputData, inputSampleRate, targetSampleRate) {
     const ratio = targetSampleRate / inputSampleRate;
     const outputLength = Math.floor(inputData.length * ratio);
     const output = new Float32Array(outputLength);
     
     for (let i = 0; i < outputLength; i++) {
-        const position = i / ratio;
-        const index = Math.floor(position);
-        const decimal = position - index;
-        
-        const a = inputData[index] || 0;
-        const b = inputData[Math.min(index + 1, inputData.length - 1)] || 0;
-        output[i] = a + (b - a) * decimal;
+      const position = i / ratio;
+      const index = Math.floor(position);
+      const decimal = position - index;
+      
+      const a = inputData[index] || 0;
+      const b = inputData[Math.min(index + 1, inputData.length - 1)] || 0;
+      output[i] = a + (b - a) * decimal;
     }
     
     return output;
-}
+  }
 
-async function startListening() {
+  async function startListening() {
     try {
-        audioDataRef.current = []
-        // Start capturing audio
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                channelCount: 1,
-                echoCancellation: true,
-            },
-        });
-        audioContextRef.current = new AudioContext();
-        const sampleRate = audioContextRef.current.sampleRate
-        mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-        const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
-        const source = mediaStreamSourceRef.current
-        const audioContext = audioContextRef.current
+      audioDataRef.current = []
+      // Start capturing audio
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+        },
+      });
+      audioContextRef.current = new AudioContext();
+      const sampleRate = audioContextRef.current.sampleRate
+      mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
+      const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+      const source = mediaStreamSourceRef.current
+      const audioContext = audioContextRef.current
 
-        processor.onaudioprocess = (event) => {
-            const audioData = event.inputBuffer.getChannelData(0);
-            // because ChatGPT realtime only supports PCM16 audio format at 24kHz sample rate
-            audioDataRef.current.push(resampleAudio(audioData, sampleRate, 24000));
-            // audioDataRef.current.push(audioData);
-        };
-        source.connect(processor);
-        processor.connect(audioContext.destination);
-        setIsRecording(true);
+      processor.onaudioprocess = (event) => {
+        const audioData = event.inputBuffer.getChannelData(0);
+        // because ChatGPT realtime only supports PCM16 audio format at 24kHz sample rate
+        audioDataRef.current.push(resampleAudio(audioData, sampleRate, 24000));
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      setIsRecording(true);
     } catch (error) {
-        console.error(error);
-        setIsRecording(false);
+      console.error(error);
+      setIsRecording(false);
     }
-}
+  }
 
-const stopListening = () => {
+  const stopListening = () => {
     if (!isRecording) return;
 
     // Disconnect and stop
@@ -156,7 +156,6 @@ const stopListening = () => {
       audioContextRef.current.close();
     }
 
-    console.log({adu: audioDataRef.current})
     const combinedAudioData = new Float32Array(audioDataRef.current.reduce((tot, arr) => tot + arr.length, 0))
 
     // Combine all audio chunks
@@ -166,7 +165,6 @@ const stopListening = () => {
       offset += chunk.length;
     }
 
-    console.log({combinedAudioData})
     // Base64 encode
     const base64AudioData = base64EncodeAudio(combinedAudioData);
 
@@ -182,13 +180,27 @@ const stopListening = () => {
     setIsRecording(false);
   };
 
+  // Handle both mouse and touch events
+  const handleStart = (e) => {
+    e.preventDefault(); // Prevent default behavior
+    if (isConnected && !isRecording) {
+      startListening();
+    }
+  };
+
+  const handleEnd = (e) => {
+    e.preventDefault(); // Prevent default behavior
+    if (isRecording) {
+      stopListening();
+    }
+  };
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
       <div className="text-center">
         <div 
           className={`
-            w-48 h-48 rounded-full flex items-center justify-center cursor-pointer 
+            w-48 h-48 rounded-full flex items-center justify-center
             transition-all duration-300 ease-in-out shadow-lg
             ${!isConnected 
               ? 'bg-gray-500 cursor-not-allowed' 
@@ -196,10 +208,14 @@ const stopListening = () => {
                 ? 'bg-red-500 hover:bg-red-600' 
                 : 'bg-blue-500 hover:bg-blue-600'
             }
+            select-none touch-none
           `}
-          onMouseDown={isConnected ? startListening : undefined}
-          onMouseUp={isConnected ? stopListening : undefined}
-          onMouseLeave={isConnected ? stopListening : undefined}
+          onMouseDown={handleStart}
+          onMouseUp={handleEnd}
+          onMouseLeave={handleEnd}
+          onTouchStart={handleStart}
+          onTouchEnd={handleEnd}
+          onTouchCancel={handleEnd}
         >
           {!isConnected ? (
             <MicOff color="white" size={64} />
