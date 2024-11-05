@@ -1,35 +1,25 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, MicOff } from 'lucide-react';
+import { Circle, Loader, WifiOff } from 'lucide-react';
 import {AudioQueueManager} from "./speak.js"
-
+import {resampleAudio, decodePCM16FromBase64, floatTo16BitPCM, base64EncodeAudio} from "./utils.js"
 
 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-const WebsocketURL = `${wsProtocol}://<change?>/ws`;
+const WebsocketURL = `${wsProtocol}://localhost:8080/ws`;
 
 function PushToTalk() {
-  const [isRecording, setIsRecording] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [transcriptText, setTranscriptText] = useState("");
+  const [transcriptDone, setTranscriptDone] = useState(false);
   const [error, setError] = useState(null);
+  const [text, setText] = useState("Idle");
+  const [messageQueue, setMessageQueue] = useState([]);
+  // Refs
   const audioContextRef = useRef(null);
   const websocketRef = useRef(null);
   const mediaStreamSourceRef = useRef(null);
-  const audioDataRef = useRef([]);
 
-  const outputAudioDataRef = useRef(``);
 
-  function decodePCM16FromBase64(base64String) {
-    const binaryString = atob(base64String);
-    const buffer = new ArrayBuffer(binaryString.length);
-    const bytes = new Uint8Array(buffer);
-    
-    for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    
-    return new Int16Array(buffer);
-  }
-
-  // Establish WebSocket connection
+  // Establish WebSocket connection and start listening
   useEffect(() => {
     // Create WebSocket connection
     websocketRef.current = new WebSocket(WebsocketURL);
@@ -54,69 +44,75 @@ function PushToTalk() {
       try {
         const message = JSON.parse(event.data);
         if (message.type === 'response.audio.delta' && message.data) {
+           // have to play this audio
+           setText("Playing...");
            audioQueueManager.addAudioToQueue(decodePCM16FromBase64(message.data))
         } else if (message.type === 'response.audio.done'){
+            setText("Idle")
+        } else if(message.type === 'input_audio_buffer.cleared'){
+        } else if (message.type === 'input_audio_buffer.speech_started'){
+            setText("Listening...")
+        } else if (message.type === 'response.audio_transcript.delta'){
+            console.log('Delta received:', message.data)
+            setMessageQueue(prev => [...prev, message]);
+        } else if (message.type === 'response.audio_transcript.done'){
+          console.log("done")
+          setMessageQueue(prev => [...prev, message]);
+        } else if (message.type === 'input_audio_buffer.speech_stopped'){
+          setText("Processing...");
+        }else {
+          console.error("Unhandled message type received from server: ", message.type)
         }
-
       } catch (error) {
         console.error('Error processing WebSocket message:', error);
         setError(`Error processing audio: ${error.message}`);
       }
     };
 
+
+    startListening();
+
     // Cleanup on component unmount
     return () => {
       if (websocketRef.current) {
         websocketRef.current.close();
       }
+    if (mediaStreamSourceRef.current) {
+      mediaStreamSourceRef.current.disconnect();
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
     };
   }, []);
 
-  function floatTo16BitPCM(float32Array) {
-    const buffer = new ArrayBuffer(float32Array.length * 2);
-    const view = new DataView(buffer);
-    let offset = 0;
-    for (let i = 0; i < float32Array.length; i++, offset += 2) {
-      let s = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
-  }
 
-  // Base64 encode PCM16 data
-  const base64EncodeAudio = (float32Array) => {
-    const arrayBuffer = floatTo16BitPCM(float32Array);
-    let binary = '';
-    let bytes = new Uint8Array(arrayBuffer);
-    const chunkSize = 0x8000; // 32KB chunk size
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      let chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, chunk);
-    }
-    return btoa(binary);
+useEffect(() => {
+  if (messageQueue.length === 0) return;
+  
+  const message = messageQueue[0];
+  
+  if (message.type === 'response.audio_transcript.delta') {
+    setTranscriptText(prevText => {
+      if (transcriptDone) {
+        console.log('First delta after done, resetting with:', message.data);
+        setTranscriptDone(false);
+        return message.data;
+      } else {
+        console.log('Appending delta to:', prevText);
+        return prevText + message.data;
+      }
+    });
+  } else if (message.type === 'response.audio_transcript.done') {
+    setTranscriptDone(true);
   }
-
-  function resampleAudio(inputData, inputSampleRate, targetSampleRate) {
-    const ratio = targetSampleRate / inputSampleRate;
-    const outputLength = Math.floor(inputData.length * ratio);
-    const output = new Float32Array(outputLength);
-    
-    for (let i = 0; i < outputLength; i++) {
-      const position = i / ratio;
-      const index = Math.floor(position);
-      const decimal = position - index;
-      
-      const a = inputData[index] || 0;
-      const b = inputData[Math.min(index + 1, inputData.length - 1)] || 0;
-      output[i] = a + (b - a) * decimal;
-    }
-    
-    return output;
-  }
-
-  async function startListening() {
+  
+  // Remove the processed message
+  setMessageQueue(prev => prev.slice(1));
+}, [messageQueue, transcriptDone]);
+  
+async function startListening() {
     try {
-      audioDataRef.current = []
       // Start capturing audio
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -132,119 +128,79 @@ function PushToTalk() {
       const audioContext = audioContextRef.current
 
       processor.onaudioprocess = (event) => {
+        // proceed only when isSendingAudio is true
         const audioData = event.inputBuffer.getChannelData(0);
+        // first resmaple data and then encode as base64 and send to the server directly
         // because ChatGPT realtime only supports PCM16 audio format at 24kHz sample rate
-        audioDataRef.current.push(resampleAudio(audioData, sampleRate, 24000));
+        const base64AudioData = base64EncodeAudio(resampleAudio(audioData, sampleRate, 24000))
+        if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
+              websocketRef.current.send(JSON.stringify({
+                type: 'input_audio_buffer.append',
+                data: base64AudioData
+              }));
+          }
+
       };
       source.connect(processor);
       processor.connect(audioContext.destination);
-      setIsRecording(true);
     } catch (error) {
       console.error(error);
-      setIsRecording(false);
     }
   }
 
-  const stopListening = () => {
-    if (!isRecording) return;
-
-    // Disconnect and stop
-    if (mediaStreamSourceRef.current) {
-      mediaStreamSourceRef.current.disconnect();
+  
+    const getCircleClassName = () => {
+    const baseClasses = "w-48 h-48 rounded-full flex items-center justify-center transition-all duration-300 ease-in-out relative";
+    
+    if (!isConnected) {
+      return `${baseClasses} bg-gray-300 border-4 border-red-500`; // Added red border for disconnected state
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-    }
-
-    const combinedAudioData = new Float32Array(audioDataRef.current.reduce((tot, arr) => tot + arr.length, 0))
-
-    // Combine all audio chunks
-    let offset = 0;
-    for (const chunk of audioDataRef.current) {
-      combinedAudioData.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // Base64 encode
-    const base64AudioData = base64EncodeAudio(combinedAudioData);
-
-    // Send to WebSocket if connected
-    if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
-      websocketRef.current.send(JSON.stringify({
-        type: 'audio',
-        data: base64AudioData
-      }));
-    }
-
-    // Reset state
-    setIsRecording(false);
-  };
-
-  // Handle both mouse and touch events
-  const handleStart = (e) => {
-    e.preventDefault(); // Prevent default behavior
-    if (isConnected && !isRecording) {
-      startListening();
-    }
-  };
-
-  const handleEnd = (e) => {
-    e.preventDefault(); // Prevent default behavior
-    if (isRecording) {
-      stopListening();
+    
+    switch (text) {
+      case 'Listening...':
+        return `${baseClasses} bg-black animate-pulse`;
+      case 'Processing...':
+        return `${baseClasses} bg-orange-500`;
+      default:
+        return `${baseClasses} bg-black`;
     }
   };
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
-      <div className="text-center">
-        <div 
-          className={`
-            w-48 h-48 rounded-full flex items-center justify-center
-            transition-all duration-300 ease-in-out shadow-lg
-            ${!isConnected 
-              ? 'bg-gray-500 cursor-not-allowed' 
-              : isRecording 
-                ? 'bg-red-500 hover:bg-red-600' 
-                : 'bg-blue-500 hover:bg-blue-600'
-            }
-            select-none touch-none
-          `}
-          onMouseDown={handleStart}
-          onMouseUp={handleEnd}
-          onMouseLeave={handleEnd}
-          onTouchStart={handleStart}
-          onTouchEnd={handleEnd}
-          onTouchCancel={handleEnd}
-        >
-          {!isConnected ? (
-            <MicOff color="white" size={64} />
-          ) : isRecording ? (
-            <MicOff color="white" size={64} />
-          ) : (
-            <Mic color="white" size={64} />
-          )}
-        </div>
-        
-        <div className="mt-6 text-center">
-          <h2 className="text-xl font-semibold mb-2">
-            {!isConnected 
-              ? 'Connecting...' 
-              : isRecording 
-                ? 'Recording...' 
-                : 'Push to Talk'
-            }
-          </h2>
-          
-          {error && (
-            <div className="mt-4 p-2 bg-red-100 text-red-800 rounded">
-              {error}
+      <div className="w-full max-w-2xl px-4">
+        <div className="flex flex-col items-center">
+          <div className="relative">
+            <div className={getCircleClassName()}>
+              {text === 'Listening...' && (
+                <div className="absolute w-full h-full rounded-full animate-ping bg-black opacity-50" />
+              )}
+              {!isConnected ? (
+                <WifiOff className="text-red-500" size={64} /> // Changed to WifiOff icon with red color
+              ) : text === 'Processing...' ? (
+                <Loader className="text-gray-100 animate-spin" size={64} />
+              ) : (
+                <Circle className="text-gray-100" size={64} />
+              )}
             </div>
-          )}
+          </div>
+          
+          <div className="mt-6 w-full text-center">
+            <h2 className={`text-xl font-semibold mb-2 ${!isConnected ? 'text-red-500' : ''}`}>
+              {!isConnected ? 'Connection Lost' : text}
+            </h2>
+            <div className="mt-2 text-lg break-words">
+              {transcriptText}
+            </div>
+            
+            {error && (
+              <div className="mt-4 p-2 bg-red-100 text-red-800 rounded">
+                {error}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
-}
-
-export default PushToTalk;
+}export default PushToTalk;
