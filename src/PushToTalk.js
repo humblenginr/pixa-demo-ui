@@ -132,7 +132,8 @@ async function startListening() {
         const audioData = event.inputBuffer.getChannelData(0);
         // first resmaple data and then encode as base64 and send to the server directly
         // because ChatGPT realtime only supports PCM16 audio format at 24kHz sample rate
-        const base64AudioData = base64EncodeAudio(resampleAudio(audioData, sampleRate, 24000))
+        // const base64AudioData = base64EncodeAudio(resampleAudio(audioData, sampleRate, 24000))
+        const base64AudioData = base64EncodeAudio(audioData)
         if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
               websocketRef.current.send(JSON.stringify({
                 type: 'input_audio_buffer.append',
