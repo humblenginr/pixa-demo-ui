@@ -46,7 +46,7 @@ function PushToTalk() {
       try {
         if (event.data instanceof ArrayBuffer) {
           // pcm16 audio data to be played
-          audioQueueManager.addAudioToQueue(decodePCM16(event.data))
+          audioQueueManager.addAudioToQueue(resampleAudio(decodePCM16(event.data), audioContextRef.current.sampleRate, 24000))
         } else {
           console.log("Received text data: ", event.data);
         }
