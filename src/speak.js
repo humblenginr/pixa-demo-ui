@@ -1,7 +1,7 @@
 export class AudioQueueManager {
     audioQueue = [];
     isPlaying = false;
-    pitchFactor = 1; 
+    pitchFactor = 0.3; 
 
     constructor() {}
 
