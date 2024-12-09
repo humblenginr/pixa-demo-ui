@@ -1,15 +1,23 @@
-export function floatTo16BitPCM(float32Array) {
-    const buffer = new ArrayBuffer(float32Array.length * 2);
-    const view = new DataView(buffer);
-    let offset = 0;
-    for (let i = 0; i < float32Array.length; i++, offset += 2) {
-      let s = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
+// Convert float32 audio data to 16-bit PCM binary
+export function floatTo16BitPCM(inputData) {
+  // Create a new ArrayBuffer to hold 16-bit PCM data
+  const buffer = new ArrayBuffer(inputData.length * 2); // 2 bytes per sample
+  const view = new DataView(buffer);
+
+  for (let i = 0; i < inputData.length; i++) {
+    // Convert float to 16-bit integer
+    // Clamp the value between -1 and 1, then scale to 16-bit range
+    const sample = Math.max(-1, Math.min(1, inputData[i]));
+    const int16 = Math.round(sample < 0 
+      ? sample * 0x8000 
+      : sample * 0x7FFF);
+    
+    // Write the 16-bit sample at the correct position (2 bytes per sample)
+    view.setInt16(i * 2, int16, true); // true for little-endian
   }
 
-  // Base64 encode PCM16 data
+  return buffer;
+}  // Base64 encode PCM16 data
 export const base64EncodeAudio = (float32Array) => {
     const arrayBuffer = floatTo16BitPCM(float32Array);
     let binary = '';
@@ -40,14 +48,7 @@ export function resampleAudio(inputData, inputSampleRate, targetSampleRate) {
     return output;
   }
 
-export function decodePCM16FromBase64(base64String) {
-    const binaryString = atob(base64String);
-    const buffer = new ArrayBuffer(binaryString.length);
-    const bytes = new Uint8Array(buffer);
-    
-    for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    
+
+export function decodePCM16(buffer) {
     return new Int16Array(buffer);
   }

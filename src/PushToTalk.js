@@ -1,18 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Circle, Loader, WifiOff } from 'lucide-react';
 import {AudioQueueManager} from "./speak.js"
-import {resampleAudio, decodePCM16FromBase64, floatTo16BitPCM, base64EncodeAudio} from "./utils.js"
+import {resampleAudio, decodePCM16, floatTo16BitPCM, base64EncodeAudio} from "./utils.js"
 
 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-const WebsocketURL = `${wsProtocol}://localhost:8080/ws`;
+//const WebsocketURL = `${wsProtocol}://localhost:80/`;
+const WebsocketURL = `${wsProtocol}://13.203.86.242:8080/`;
+
 
 function PushToTalk() {
   const [isConnected, setIsConnected] = useState(false);
-  const [transcriptText, setTranscriptText] = useState("");
-  const [transcriptDone, setTranscriptDone] = useState(false);
   const [error, setError] = useState(null);
-  const [text, setText] = useState("Idle");
-  const [messageQueue, setMessageQueue] = useState([]);
   // Refs
   const audioContextRef = useRef(null);
   const websocketRef = useRef(null);
@@ -23,10 +21,12 @@ function PushToTalk() {
   useEffect(() => {
     // Create WebSocket connection
     websocketRef.current = new WebSocket(WebsocketURL);
+    websocketRef.current.binaryType = "arraybuffer"
 
     websocketRef.current.onopen = () => {
       console.log('WebSocket connection established');
       setIsConnected(true);
+      
     };
 
     websocketRef.current.onclose = () => {
@@ -39,29 +39,16 @@ function PushToTalk() {
       setIsConnected(false);
     };
 
+
+
     const audioQueueManager = new AudioQueueManager();
     websocketRef.current.onmessage = async (event) => {
       try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'response.audio.delta' && message.data) {
-           // have to play this audio
-           setText("Playing...");
-           audioQueueManager.addAudioToQueue(decodePCM16FromBase64(message.data))
-        } else if (message.type === 'response.audio.done'){
-            setText("Idle")
-        } else if(message.type === 'input_audio_buffer.cleared'){
-        } else if (message.type === 'input_audio_buffer.speech_started'){
-            setText("Listening...")
-        } else if (message.type === 'response.audio_transcript.delta'){
-            console.log('Delta received:', message.data)
-            setMessageQueue(prev => [...prev, message]);
-        } else if (message.type === 'response.audio_transcript.done'){
-          console.log("done")
-          setMessageQueue(prev => [...prev, message]);
-        } else if (message.type === 'input_audio_buffer.speech_stopped'){
-          setText("Processing...");
-        }else {
-          console.error("Unhandled message type received from server: ", message.type)
+        if (event.data instanceof ArrayBuffer) {
+          // pcm16 audio data to be played
+          audioQueueManager.addAudioToQueue(decodePCM16(event.data))
+        } else {
+          console.log("Received text data: ", event.data);
         }
       } catch (error) {
         console.error('Error processing WebSocket message:', error);
@@ -71,7 +58,6 @@ function PushToTalk() {
 
 
     startListening();
-
     // Cleanup on component unmount
     return () => {
       if (websocketRef.current) {
@@ -87,60 +73,27 @@ function PushToTalk() {
   }, []);
 
 
-useEffect(() => {
-  if (messageQueue.length === 0) return;
-  
-  const message = messageQueue[0];
-  
-  if (message.type === 'response.audio_transcript.delta') {
-    setTranscriptText(prevText => {
-      if (transcriptDone) {
-        console.log('First delta after done, resetting with:', message.data);
-        setTranscriptDone(false);
-        return message.data;
-      } else {
-        console.log('Appending delta to:', prevText);
-        return prevText + message.data;
-      }
-    });
-  } else if (message.type === 'response.audio_transcript.done') {
-    setTranscriptDone(true);
-  }
-  
-  // Remove the processed message
-  setMessageQueue(prev => prev.slice(1));
-}, [messageQueue, transcriptDone]);
-  
 async function startListening() {
     try {
       // Start capturing audio
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          echoCancellation: true,
         },
       });
       audioContextRef.current = new AudioContext();
       const sampleRate = audioContextRef.current.sampleRate
+      console.log({sampleRate})
       mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
       const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
       const source = mediaStreamSourceRef.current
       const audioContext = audioContextRef.current
 
       processor.onaudioprocess = (event) => {
-        // proceed only when isSendingAudio is true
         const audioData = event.inputBuffer.getChannelData(0);
-        // first resmaple data and then encode as base64 and send to the server directly
-        // because ChatGPT realtime only supports PCM16 audio format at 24kHz sample rate
-        // const base64AudioData = base64EncodeAudio(resampleAudio(audioData, sampleRate, 24000))
-        const base64AudioData = base64EncodeAudio(audioData)
         if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
-              websocketRef.current.send(JSON.stringify({
-                type: 'input_audio_buffer.append',
-                data: base64AudioData
-              }));
+          websocketRef.current.send(floatTo16BitPCM(resampleAudio(audioData, sampleRate, 24000)))
           }
-
       };
       source.connect(processor);
       processor.connect(audioContext.destination);
@@ -150,36 +103,17 @@ async function startListening() {
   }
 
   
-    const getCircleClassName = () => {
-    const baseClasses = "w-48 h-48 rounded-full flex items-center justify-center transition-all duration-300 ease-in-out relative";
-    
-    if (!isConnected) {
-      return `${baseClasses} bg-gray-300 border-4 border-red-500`; // Added red border for disconnected state
-    }
-    
-    switch (text) {
-      case 'Listening...':
-        return `${baseClasses} bg-black animate-pulse`;
-      case 'Processing...':
-        return `${baseClasses} bg-orange-500`;
-      default:
-        return `${baseClasses} bg-black`;
-    }
-  };
-
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
       <div className="w-full max-w-2xl px-4">
         <div className="flex flex-col items-center">
           <div className="relative">
-            <div className={getCircleClassName()}>
-              {text === 'Listening...' && (
+            <div className="circle">
+              {isConnected && (
                 <div className="absolute w-full h-full rounded-full animate-ping bg-black opacity-50" />
               )}
               {!isConnected ? (
                 <WifiOff className="text-red-500" size={64} /> // Changed to WifiOff icon with red color
-              ) : text === 'Processing...' ? (
-                <Loader className="text-gray-100 animate-spin" size={64} />
               ) : (
                 <Circle className="text-gray-100" size={64} />
               )}
@@ -188,11 +122,8 @@ async function startListening() {
           
           <div className="mt-6 w-full text-center">
             <h2 className={`text-xl font-semibold mb-2 ${!isConnected ? 'text-red-500' : ''}`}>
-              {!isConnected ? 'Connection Lost' : text}
+              {!isConnected ? 'Connection Lost' : ""}
             </h2>
-            <div className="mt-2 text-lg break-words">
-              {transcriptText}
-            </div>
             
             {error && (
               <div className="mt-4 p-2 bg-red-100 text-red-800 rounded">
