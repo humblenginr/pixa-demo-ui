@@ -87,7 +87,7 @@ async function startListening() {
       audioContextRef.current = new AudioContext();
       const sampleRate = audioContextRef.current.sampleRate
       console.log({sampleRate})
-      audioQueueManagerRef.current.setPitchFactor((24000.0/sampleRate)*0.85)
+      audioQueueManagerRef.current.setPitchFactor((24000.0/sampleRate)*0.93)
 
       mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
       const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
