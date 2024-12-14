@@ -49,7 +49,7 @@ function PushToTalk() {
       try {
         if (event.data instanceof ArrayBuffer) {
           // pcm16 audio data to be played
-          audioQueueManager.addAudioToQueue(resampleAudio(decodePCM16(event.data), audioContextRef.current.sampleRate, 24000))
+          audioQueueManager.addAudioToQueue(decodePCM16(event.data))
         } else {
           console.log("Received text data: ", event.data);
         }
@@ -87,7 +87,7 @@ async function startListening() {
       audioContextRef.current = new AudioContext();
       const sampleRate = audioContextRef.current.sampleRate
       console.log({sampleRate})
-      audioQueueManagerRef.current.setPitchFactor(24000.0/sampleRate)
+      audioQueueManagerRef.current.setPitchFactor((24000.0/sampleRate)*0.85)
 
       mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
       const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
