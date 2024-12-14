@@ -15,6 +15,8 @@ function PushToTalk() {
   const audioContextRef = useRef(null);
   const websocketRef = useRef(null);
   const mediaStreamSourceRef = useRef(null);
+  const audioQueueManagerRef = useRef(null);
+
 
 
   // Establish WebSocket connection and start listening
@@ -42,6 +44,7 @@ function PushToTalk() {
 
 
     const audioQueueManager = new AudioQueueManager();
+    audioQueueManagerRef.current = audioQueueManager
     websocketRef.current.onmessage = async (event) => {
       try {
         if (event.data instanceof ArrayBuffer) {
@@ -84,7 +87,8 @@ async function startListening() {
       audioContextRef.current = new AudioContext();
       const sampleRate = audioContextRef.current.sampleRate
       console.log({sampleRate})
-      audioQueueManager.setPitchFactor(sampleRate/24000)
+      audioQueueManagerRef.current.setPitchFactor(sampleRate/24000)
+
       mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
       const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
       const source = mediaStreamSourceRef.current
